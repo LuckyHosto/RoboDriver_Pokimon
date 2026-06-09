@@ -6,7 +6,7 @@ import cv2
 import serial
 import serial.tools.list_ports
 
-from opcv2 import annotate_frame, detect_signs, release as release_opencv
+from opcv2 import annotate_frame, detect_signs, orient_frame, release as release_opencv
 
 try:
     from picamera2 import Picamera2
@@ -60,10 +60,11 @@ class Camera:
     def read(self):
         if self._picam is not None:
             frame = self._picam.capture_array()
-            return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            return orient_frame(frame)
 
         ok, frame = self._cv_cam.read()
-        return frame if ok else None
+        return orient_frame(frame) if ok else None
 
     def stop(self):
         if self._picam is not None:
@@ -130,7 +131,7 @@ def stable_label(history: deque[str | None]) -> str | None:
 
 
 def run(args: argparse.Namespace) -> None:
-    ser = open_serial(args.port, args.baudrate)
+    ser = None if args.camera_only else open_serial(args.port, args.baudrate)
     camera = Camera(args.camera_index)
     history: deque[str | None] = deque(maxlen=STABLE_FRAMES)
     last_command = None
@@ -138,8 +139,9 @@ def run(args: argparse.Namespace) -> None:
 
     try:
         camera.start()
-        send_command(ser, f"SPEED {args.speed}")
-        send_command(ser, "READY")
+        if ser is not None:
+            send_command(ser, f"SPEED {args.speed}")
+            send_command(ser, "READY")
 
         while True:
             frame = camera.read()
@@ -153,7 +155,7 @@ def run(args: argparse.Namespace) -> None:
             history.append(label)
             stable = stable_label(history)
 
-            if stable in SIGN_COMMANDS:
+            if ser is not None and stable in SIGN_COMMANDS:
                 command = SIGN_COMMANDS[stable]
                 now = time.monotonic()
                 can_repeat = command in {"LEFT", "RIGHT", "BRICK"}
@@ -166,18 +168,20 @@ def run(args: argparse.Namespace) -> None:
                     last_sent_at = now
                     history.clear()
 
-            if args.show:
+            if not args.no_show:
                 cv2.imshow("RoboDriver signs", annotate_frame(frame, detections))
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
 
-            while ser.in_waiting:
-                print("< " + ser.readline().decode("utf-8", errors="replace").strip(), flush=True)
+            if ser is not None:
+                while ser.in_waiting:
+                    print("< " + ser.readline().decode("utf-8", errors="replace").strip(), flush=True)
 
     finally:
-        send_command(ser, "STOP")
+        if ser is not None:
+            send_command(ser, "STOP")
+            ser.close()
         camera.stop()
-        ser.close()
         release_opencv()
 
 
@@ -187,7 +191,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--baudrate", type=int, default=DEFAULT_BAUDRATE)
     parser.add_argument("--speed", type=int, default=DEFAULT_SPEED)
     parser.add_argument("--camera-index", type=int, default=0)
-    parser.add_argument("--show", action="store_true", help="Show OpenCV debug window")
+    parser.add_argument("--camera-only", action="store_true", help="Show recognition without Arduino commands")
+    parser.add_argument("--no-show", action="store_true", help="Do not show OpenCV debug window")
     return parser.parse_args()
 
 

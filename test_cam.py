@@ -13,7 +13,7 @@ print("Starting video window... Press 'q' to exit.")
 try:
     while True:
         # ����������� ������
-        frame = picam2.capture_array()
+        frame = cv2.rotate(picam2.capture_array(), cv2.ROTATE_180)
 
         # ���� ����� ������� �� ��� �����, ���������������� ������ ����:
         # frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)

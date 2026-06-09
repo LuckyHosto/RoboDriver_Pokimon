@@ -5,15 +5,18 @@ import numpy as np
 
 
 BASE_DIR = Path(__file__).resolve().parent
-TEMPLATES_DIR = BASE_DIR / "Set_znakc"
 FACE_CASCADE_PATH = BASE_DIR / "faces.xml"
 
 TEMPLATE_SIZE = 120
-MATCH_THRESHOLD = 0.62
-MIN_SIGN_AREA = 900
-MIN_RADIUS = 18
+MATCH_THRESHOLD = 0.72
+SECOND_BEST_MARGIN = 0.06
+MIN_SIGN_AREA = 1200
+MIN_RADIUS = 20
+MIN_WHITE_RATIO = 0.025
+MIN_COLOR_FILL_RATIO = 0.24
 FINE_VERTEX_EPSILON = 0.01
 COARSE_VERTEX_EPSILON = 0.03
+FLIP_FRAME = True
 
 LABELS = {
     "brick": "brick",
@@ -27,6 +30,23 @@ _camera = None
 _last_announced_labels = set()
 
 
+def _find_templates_dir() -> Path | None:
+    preferred_names = ("SET_ZNAKC", "Set_znakc", "set_znakc")
+    for name in preferred_names:
+        path = BASE_DIR / name
+        if path.exists() and path.is_dir():
+            return path
+
+    for path in BASE_DIR.iterdir():
+        if path.is_dir() and path.name.lower() == "set_znakc":
+            return path
+
+    return None
+
+
+TEMPLATES_DIR = _find_templates_dir()
+
+
 def _clean_mask(mask: np.ndarray, kernel_size: int = 5) -> np.ndarray:
     kernel = np.ones((kernel_size, kernel_size), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
@@ -35,9 +55,9 @@ def _clean_mask(mask: np.ndarray, kernel_size: int = 5) -> np.ndarray:
 
 
 def _build_color_masks(hsv: np.ndarray) -> dict[str, np.ndarray]:
-    blue = cv2.inRange(hsv, (90, 90, 50), (135, 255, 255))
-    red_low = cv2.inRange(hsv, (0, 120, 60), (12, 255, 255))
-    red_high = cv2.inRange(hsv, (165, 120, 60), (180, 255, 255))
+    blue = cv2.inRange(hsv, (92, 100, 55), (132, 255, 255))
+    red_low = cv2.inRange(hsv, (0, 120, 55), (12, 255, 255))
+    red_high = cv2.inRange(hsv, (168, 120, 55), (180, 255, 255))
     red = cv2.bitwise_or(red_low, red_high)
     white = cv2.inRange(hsv, (0, 0, 170), (180, 70, 255))
     return {
@@ -202,10 +222,10 @@ def _compare_features(candidate: dict, template: dict) -> float:
 
 def _load_templates() -> list[dict]:
     templates = []
-    if not TEMPLATES_DIR.exists():
+    if TEMPLATES_DIR is None or not TEMPLATES_DIR.exists():
         return templates
 
-    for path in sorted(TEMPLATES_DIR.iterdir()):
+    for path in sorted(TEMPLATES_DIR.rglob("*")):
         if path.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
             continue
 
@@ -297,7 +317,8 @@ def _candidate_boxes(frame: np.ndarray, faces: list[tuple[int, int, int, int]]) 
                 continue
 
             circularity = (4.0 * np.pi * area) / (perimeter * perimeter)
-            if circularity < 0.22:
+            min_circularity = 0.38 if color == "red" else 0.48
+            if circularity < min_circularity:
                 continue
 
             (cx, cy), radius = cv2.minEnclosingCircle(contour)
@@ -312,13 +333,20 @@ def _candidate_boxes(frame: np.ndarray, faces: list[tuple[int, int, int, int]]) 
             if x2 <= x1 or y2 <= y1:
                 continue
 
+            box_width = x2 - x1
+            box_height = y2 - y1
+            aspect_ratio = box_width / max(box_height, 1)
+            if not 0.70 <= aspect_ratio <= 1.30:
+                continue
+
             box = (x1, y1, x2, y2)
             if any(_boxes_overlap(box, face_box) for face_box in faces):
                 continue
 
-            bbox_area = (x2 - x1) * (y2 - y1)
+            bbox_area = box_width * box_height
             color_pixels = cv2.countNonZero(masks[color][y1:y2, x1:x2])
-            if color_pixels / max(bbox_area, 1) < 0.20:
+            color_fill = color_pixels / max(bbox_area, 1)
+            if color_fill < MIN_COLOR_FILL_RATIO:
                 continue
 
             roi = frame[y1:y2, x1:x2]
@@ -326,7 +354,18 @@ def _candidate_boxes(frame: np.ndarray, faces: list[tuple[int, int, int, int]]) 
             if features is None:
                 continue
 
-            candidates.append({"box": box, "features": features})
+            if features["white_ratio"] < MIN_WHITE_RATIO:
+                continue
+
+            candidates.append(
+                {
+                    "box": box,
+                    "features": features,
+                    "area": area,
+                    "color_fill": color_fill,
+                    "circularity": circularity,
+                }
+            )
 
     return candidates
 
@@ -342,6 +381,7 @@ def detect_signs(frame: np.ndarray) -> list[dict]:
     for candidate in _candidate_boxes(frame, faces):
         best_template = None
         best_score = 0.0
+        second_score = 0.0
 
         for template in TEMPLATES:
             if template["features"]["color"] != candidate["features"]["color"]:
@@ -349,10 +389,15 @@ def detect_signs(frame: np.ndarray) -> list[dict]:
 
             score = _compare_features(candidate["features"], template["features"])
             if score > best_score:
+                second_score = best_score
                 best_score = score
                 best_template = template
+            elif score > second_score:
+                second_score = score
 
         if best_template is None or best_score < MATCH_THRESHOLD:
+            continue
+        if second_score > 0.0 and best_score - second_score < SECOND_BEST_MARGIN:
             continue
 
         detections.append(
@@ -360,6 +405,7 @@ def detect_signs(frame: np.ndarray) -> list[dict]:
                 "label": best_template["label"],
                 "name": best_template["name"],
                 "score": best_score,
+                "second_score": second_score,
                 "box": candidate["box"],
             }
         )
@@ -383,10 +429,20 @@ def annotate_frame(frame: np.ndarray, detections: list[dict] | None = None) -> n
         x1, y1, x2, y2 = detection["box"]
         cv2.rectangle(result, (x1, y1), (x2, y2), (0, 255, 0), 2)
         label = f"{detection['label']} {detection['score']:.2f}"
+        text_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+        text_x = x1
+        text_y = max(text_size[1] + 8, y1 - 8)
+        cv2.rectangle(
+            result,
+            (text_x, text_y - text_size[1] - 6),
+            (text_x + text_size[0] + 8, text_y + 4),
+            (0, 120, 0),
+            cv2.FILLED,
+        )
         cv2.putText(
             result,
             label,
-            (x1, max(25, y1 - 10)),
+            (text_x + 4, text_y),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
             (255, 255, 255),
@@ -405,6 +461,12 @@ def annotate_frame(frame: np.ndarray, detections: list[dict] | None = None) -> n
         )
 
     return result
+
+
+def orient_frame(frame: np.ndarray) -> np.ndarray:
+    if FLIP_FRAME:
+        return cv2.rotate(frame, cv2.ROTATE_180)
+    return frame
 
 
 def _open_camera():
@@ -428,6 +490,7 @@ def get_frame():
     if not ok:
         return None
 
+    frame = orient_frame(frame)
     detections = detect_signs(frame)
     _announce_detections(detections)
     return annotate_frame(frame, detections)

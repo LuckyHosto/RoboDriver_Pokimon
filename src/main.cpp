@@ -28,6 +28,8 @@ enum LedMode {
 enum MotionMode {
   MOTION_STOPPED,
   MOTION_FORWARD,
+  MOTION_BACKWARD,
+  MOTION_MANUAL_TURN,
   MOTION_TURNING,
 };
 
@@ -177,6 +179,24 @@ void driveForward() {
   ledMode = LED_MOVING;
 }
 
+void driveBackward() {
+  tankDrive(-driveSpeed, -driveSpeed);
+  motionMode = MOTION_BACKWARD;
+  ledMode = LED_MOVING;
+}
+
+void manualTurnLeft() {
+  tankDrive(-driveSpeed, driveSpeed);
+  motionMode = MOTION_MANUAL_TURN;
+  ledMode = LED_MOVING;
+}
+
+void manualTurnRight() {
+  tankDrive(driveSpeed, -driveSpeed);
+  motionMode = MOTION_MANUAL_TURN;
+  ledMode = LED_MOVING;
+}
+
 void startTurn(float degrees) {
   if (!gyroReady) {
     Serial.println(F("NO_GYRO"));
@@ -235,6 +255,15 @@ void handleCommand(String command) {
   } else if (command == "FORWARD") {
     driveForward();
     Serial.println(F("FORWARD_OK"));
+  } else if (command == "BACKWARD") {
+    driveBackward();
+    Serial.println(F("BACKWARD_OK"));
+  } else if (command == "TURN_LEFT") {
+    manualTurnLeft();
+    Serial.println(F("TURN_LEFT_OK"));
+  } else if (command == "TURN_RIGHT") {
+    manualTurnRight();
+    Serial.println(F("TURN_RIGHT_OK"));
   } else if (command == "STOP") {
     stopRobot();
     Serial.println(F("STOP_OK"));
