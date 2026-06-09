@@ -8,8 +8,8 @@ BASE_DIR = Path(__file__).resolve().parent
 FACE_CASCADE_PATH = BASE_DIR / "faces.xml"
 
 TEMPLATE_SIZE = 120
-MATCH_THRESHOLD = 0.72
-SECOND_BEST_MARGIN = 0.06
+MATCH_THRESHOLD = 0.70
+SECOND_BEST_MARGIN = 0.04
 MIN_SIGN_AREA = 1200
 MIN_RADIUS = 20
 MIN_WHITE_RATIO = 0.025
@@ -99,12 +99,10 @@ def _score_delta(a: float, b: float, scale: float) -> float:
     return max(0.0, 1.0 - (abs(a - b) / scale))
 
 
-def _red_shape_hint(color: str, fine_vertices: int) -> str | None:
-    if color != "red":
-        return None
-    if fine_vertices <= 10:
-        return "octagon"
-    if fine_vertices >= 12:
+def _shape_hint(color: str, coarse_vertices: int, circularity: float) -> str | None:
+    if 5 <= coarse_vertices <= 7 and circularity < 0.88:
+        return "hexagon"
+    if coarse_vertices >= 8 or circularity >= 0.70:
         return "round"
     return None
 
@@ -178,7 +176,7 @@ def _extract_features(image: np.ndarray, forced_color: str | None = None) -> dic
         "circularity": circularity,
         "fine_vertices": fine_vertices,
         "coarse_vertices": coarse_vertices,
-        "shape_hint": _red_shape_hint(color, fine_vertices),
+        "shape_hint": _shape_hint(color, coarse_vertices, circularity),
     }
 
 
@@ -214,8 +212,11 @@ def _compare_features(candidate: dict, template: dict) -> float:
         + 0.02 * white_score
     )
 
-    if candidate["color"] == "red" and template["color"] == "red":
-        score *= 0.75 + 0.25 * _shape_hint_score(candidate, template)
+    shape_score = _shape_hint_score(candidate, template)
+    if shape_score == 0.0:
+        score *= 0.35
+    elif shape_score == 1.0:
+        score *= 1.08
 
     return score
 
@@ -385,6 +386,12 @@ def detect_signs(frame: np.ndarray) -> list[dict]:
 
         for template in TEMPLATES:
             if template["features"]["color"] != candidate["features"]["color"]:
+                continue
+            if (
+                candidate["features"].get("shape_hint") is not None
+                and template["features"].get("shape_hint") is not None
+                and candidate["features"]["shape_hint"] != template["features"]["shape_hint"]
+            ):
                 continue
 
             score = _compare_features(candidate["features"], template["features"])
