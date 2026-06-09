@@ -47,8 +47,17 @@ def is_round_or_hex(contour) -> bool:
     if radius < MIN_RADIUS:
         return False
 
+    x, y, width, height = cv2.boundingRect(contour)
+    aspect_ratio = width / max(height, 1)
+    if not 0.65 <= aspect_ratio <= 1.35:
+        return False
+
+    extent = area / float(max(width * height, 1))
+    if not 0.45 <= extent <= 0.88:
+        return False
+
     circularity = (4.0 * np.pi * area) / (perimeter * perimeter)
-    if circularity < 0.45:
+    if circularity < 0.50:
         return False
 
     approx = cv2.approxPolyDP(contour, 0.03 * perimeter, True)

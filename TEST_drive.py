@@ -287,8 +287,7 @@ class CameraStream:
 
     def _read_frame(self):
         if self.picam is not None:
-            frame = self.picam.capture_array()
-            return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            return self.picam.capture_array()
 
         ok, frame = self.cv_cam.read()
         return frame if ok else None

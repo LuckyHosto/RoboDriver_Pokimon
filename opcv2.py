@@ -100,10 +100,71 @@ def _score_delta(a: float, b: float, scale: float) -> float:
 
 
 def _shape_hint(color: str, coarse_vertices: int, circularity: float) -> str | None:
-    if 5 <= coarse_vertices <= 7 and circularity < 0.88:
-        return "hexagon"
-    if coarse_vertices >= 8 or circularity >= 0.70:
+    if color == "blue" and circularity >= 0.45:
         return "round"
+    if 5 <= coarse_vertices <= 7 and circularity < 0.82:
+        return "hexagon"
+    if coarse_vertices >= 8 or circularity >= 0.72:
+        return "round"
+    return None
+
+
+def _largest_white_component(symbol: np.ndarray) -> np.ndarray:
+    contours, _ = cv2.findContours(symbol, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return symbol
+
+    largest = max(contours, key=cv2.contourArea)
+    component = np.zeros_like(symbol)
+    cv2.drawContours(component, [largest], -1, 255, thickness=cv2.FILLED)
+    return component
+
+
+def _is_horizontal_bar(symbol: np.ndarray) -> bool:
+    component = _largest_white_component(symbol)
+    ys, xs = np.where(component > 0)
+    if len(xs) < 40:
+        return False
+
+    width = xs.max() - xs.min() + 1
+    height = ys.max() - ys.min() + 1
+    density = len(xs) / float(max(width * height, 1))
+
+    return width >= height * 2.2 and density >= 0.45
+
+
+def _classify_blue_arrow(symbol: np.ndarray) -> str | None:
+    component = _largest_white_component(symbol)
+    ys, xs = np.where(component > 0)
+    if len(xs) < 60:
+        return None
+
+    center = TEMPLATE_SIZE / 2.0
+    left_mass = np.maximum(center - xs, 0).sum()
+    right_mass = np.maximum(xs - center, 0).sum()
+    up_mass = np.maximum(center - ys, 0).sum()
+    down_mass = np.maximum(ys - center, 0).sum()
+
+    width = xs.max() - xs.min() + 1
+    height = ys.max() - ys.min() + 1
+
+    if up_mass > max(left_mass, right_mass) * 0.85 and up_mass > down_mass * 1.25:
+        return "forward"
+    if width >= height * 0.85:
+        return "right" if right_mass >= left_mass else "left"
+
+    return "forward"
+
+
+def _rule_based_label(features: dict) -> str | None:
+    color = features["color"]
+
+    if color == "red":
+        return "brick" if _is_horizontal_bar(features["symbol"]) else "STOP"
+
+    if color == "blue":
+        return _classify_blue_arrow(features["symbol"])
+
     return None
 
 
@@ -372,7 +433,7 @@ def _candidate_boxes(frame: np.ndarray, faces: list[tuple[int, int, int, int]]) 
 
 
 def detect_signs(frame: np.ndarray) -> list[dict]:
-    if frame is None or frame.size == 0 or not TEMPLATES:
+    if frame is None or frame.size == 0:
         return []
 
     gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -380,6 +441,22 @@ def detect_signs(frame: np.ndarray) -> list[dict]:
     detections = []
 
     for candidate in _candidate_boxes(frame, faces):
+        rule_label = _rule_based_label(candidate["features"])
+        if rule_label is not None:
+            detections.append(
+                {
+                    "label": rule_label,
+                    "name": "rule",
+                    "score": 0.90,
+                    "second_score": 0.0,
+                    "box": candidate["box"],
+                }
+            )
+            continue
+
+        if not TEMPLATES:
+            continue
+
         best_template = None
         best_score = 0.0
         second_score = 0.0
