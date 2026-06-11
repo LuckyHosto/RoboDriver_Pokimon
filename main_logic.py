@@ -1,200 +1,117 @@
-import argparse
-import time
-from collections import deque
-
 import cv2
-import serial
-import serial.tools.list_ports
+import numpy as np
+from picamera2 import Picamera2  # Подключаем камеру Raspberry Pi
 
-from opcv2 import annotate_frame, detect_signs, orient_frame, release as release_opencv
-
+# Загрузка и подготовка шаблонов
 try:
-    from picamera2 import Picamera2
-except ImportError:
-    Picamera2 = None
+    # Оставляем ваши пути к папке с шаблонами
+    left = cv2.imread("Set_znakc/left.png")
+    right = cv2.imread("Set_znakc/right.jpg")
+    stop = cv2.imread("Set_znakc/STOP.png")
+    brick = cv2.imread("Set_znakc/brick.png")
+    forward = cv2.imread("Set_znakc/forward.png")
 
+    left = cv2.resize(left, (64, 64))
+    right = cv2.resize(right, (64, 64))
+    stop = cv2.resize(stop, (64, 64))
+    brick = cv2.resize(brick, (64, 64))
+    forward = cv2.resize(forward, (64, 64))
 
-DEFAULT_PORTS = ("/dev/ttyUSB0", "/dev/ttyACM0", "COM3", "COM4")
-DEFAULT_BAUDRATE = 9600
-DEFAULT_SPEED = 155
-CAMERA_SIZE = (640, 480)
-MIN_COMMAND_INTERVAL = 1.0
-STABLE_FRAMES = 3
+    left = cv2.inRange(left, (89, 91, 149), (255, 255, 255))
+    right = cv2.inRange(right, (89, 91, 149), (255, 255, 255))
+    stop = cv2.inRange(stop, (89, 91, 149), (255, 255, 255))
+    brick = cv2.inRange(brick, (89, 91, 149), (255, 255, 255))
+    forward = cv2.inRange(forward, (89, 91, 149), (255, 255, 255))
 
-SIGN_COMMANDS = {
-    "brick": "BRICK",
-    "forward": "FORWARD",
-    "left": "LEFT",
-    "right": "RIGHT",
-    "tight": "RIGHT",
-    "stop": "STOP",
-}
+except Exception as e:
+    print(f"Ошибка загрузки шаблонов! Проверьте файлы в папке Set_znakc. {e}")
+    exit()
 
+def checkSize(w, h):
+    return w * h > 1500
 
-class Camera:
-    def __init__(self, index: int = 0):
-        self._picam = None
-        self._cv_cam = None
-        self._index = index
+# --- НАСТРОЙКА КАМЕРЫ RASPBERRY PI ---
+camera = Picamera2()
+camera.preview_configuration.main.size = (640, 480) # Разрешение кадра
+camera.preview_configuration.main.format = "RGB888"
+camera.preview_configuration.main.align()
+camera.configure("preview")
+camera.start()
+# -------------------------------------
 
-    def start(self):
-        if Picamera2 is not None:
-            self._picam = Picamera2()
-            config = self._picam.create_video_configuration(
-                main={"format": "RGB888", "size": CAMERA_SIZE}
-            )
-            self._picam.configure(config)
-            self._picam.start()
-            time.sleep(0.3)
-            print("Camera: Picamera2", flush=True)
-            return
+print("Нажмите 'q' в окне трансляции для выхода из программы.")
 
-        self._cv_cam = cv2.VideoCapture(self._index)
-        if not self._cv_cam.isOpened():
-            raise RuntimeError("Camera was not opened")
+while True:
+    # Захват кадра с камеры Raspberry Pi
+    im = camera.capture_array()
+    
+    # Конвертируем из RGB (формат Picamera2) в BGR (формат OpenCV) для корректной работы imshow и HSV
+    im = cv2.cvtColor(im, cv2.COLOR_RGB2BGR)
 
-        self._cv_cam.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_SIZE[0])
-        self._cv_cam.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_SIZE[1])
-        print(f"Camera: OpenCV index {self._index}", flush=True)
+    detected_action = "Searching..."
 
-    def read(self):
-        if self._picam is not None:
-            frame = self._picam.capture_array()
-            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            return orient_frame(frame)
+    # Преобразование в HSV и создание маски
+    hsv = cv2.cvtColor(im, cv2.COLOR_BGR2HSV)
+    thres = cv2.inRange(hsv, (89, 124, 73), (255, 255, 255))
+    cv2.imshow("Бинарная маска", thres) 
 
-        ok, frame = self._cv_cam.read()
-        return orient_frame(frame) if ok else None
+    bitwise = cv2.bitwise_and(im, im, mask=thres)
+    gray = cv2.cvtColor(bitwise, cv2.COLOR_BGR2GRAY)
+    
+    # Поиск контуров
+    contours, _ = cv2.findContours(gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    
+    if len(contours) != 0:
+        c = max(contours, key=cv2.contourArea)
+        x, y, w, h = cv2.boundingRect(c)
+        
+        if checkSize(w, h):
+            cv2.rectangle(im, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            
+            roImg = im[y:y+h, x:x+w]
+            roImg = cv2.resize(roImg, (64, 64))
+            roImg = cv2.inRange(roImg, (89, 120, 74), (255, 255, 255))
+            
+            # Словарь для подсчета совпадений
+            matches = {
+                "TURN LEFT": 0,
+                "TURN RIGHT": 0,
+                "STOP": 0,
+                "BRICK": 0,
+                "FORWARD": 0
+            }
+            
+            # Попиксельное сравнение
+            for i in range(64):
+                for j in range(64):
+                    if roImg[i][j] == left[i][j]: matches["TURN LEFT"] += 1
+                    if roImg[i][j] == right[i][j]: matches["TURN RIGHT"] += 1
+                    if roImg[i][j] == stop[i][j]: matches["STOP"] += 1
+                    if roImg[i][j] == brick[i][j]: matches["BRICK"] += 1
+                    if roImg[i][j] == forward[i][j]: matches["FORWARD"] += 1
+            
+            # Вывод всех совпадений в терминал (помогает понять, какой знак ближе к истине)
+            print(f"L:{matches['TURN LEFT']} | R:{matches['TURN RIGHT']} | S:{matches['STOP']} | B:{matches['BRICK']} | F:{matches['FORWARD']}")
+            
+            # Находим знак, набравший больше всего совпадений
+            best_sign = max(matches, key=matches.get)
+            max_value = matches[best_sign]
+            
+            # Минимальный порог (например, 2600 пикселей для стабильного срабатывания)
+            MIN_THRESHOLD = 2600 
+            
+            if max_value > MIN_THRESHOLD:
+                detected_action = f"{best_sign} ({max_value})"
+            else:
+                detected_action = "Unknown Sign"
 
-    def stop(self):
-        if self._picam is not None:
-            self._picam.stop()
-            self._picam = None
+    # Вывод текста на экран
+    cv2.putText(im, detected_action, (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+    cv2.imshow("Raspberry Pi Vision", im)
+    
+    if cv2.waitKey(1) == ord('q'):
+        break
 
-        if self._cv_cam is not None:
-            self._cv_cam.release()
-            self._cv_cam = None
-
-
-def list_serial_ports() -> list[str]:
-    return [port.device for port in serial.tools.list_ports.comports()]
-
-
-def open_serial(port: str | None, baudrate: int) -> serial.Serial:
-    candidates = [port] if port else [*DEFAULT_PORTS, *list_serial_ports()]
-    seen = set()
-
-    for candidate in candidates:
-        if not candidate or candidate in seen:
-            continue
-        seen.add(candidate)
-
-        try:
-            ser = serial.Serial(candidate, baudrate, timeout=0.05)
-            time.sleep(2.0)
-            print(f"Serial: connected to {candidate}", flush=True)
-            return ser
-        except serial.SerialException:
-            pass
-
-    raise RuntimeError("Arduino serial port was not found")
-
-
-def send_command(ser: serial.Serial, command: str) -> None:
-    ser.write((command + "\n").encode("utf-8"))
-    ser.flush()
-    print(f"> {command}", flush=True)
-
-
-def normalize_label(label: str) -> str:
-    return label.strip().lower()
-
-
-def choose_label(detections: list[dict]) -> str | None:
-    if not detections:
-        return None
-
-    best = max(detections, key=lambda item: item["score"])
-    return normalize_label(best["label"])
-
-
-def stable_label(history: deque[str | None]) -> str | None:
-    labels = [label for label in history if label is not None]
-    if len(labels) < STABLE_FRAMES:
-        return None
-
-    latest = labels[-1]
-    if labels[-STABLE_FRAMES:].count(latest) == STABLE_FRAMES:
-        return latest
-
-    return None
-
-
-def run(args: argparse.Namespace) -> None:
-    ser = None if args.camera_only else open_serial(args.port, args.baudrate)
-    camera = Camera(args.camera_index)
-    history: deque[str | None] = deque(maxlen=STABLE_FRAMES)
-    last_command = None
-    last_sent_at = 0.0
-
-    try:
-        camera.start()
-        if ser is not None:
-            send_command(ser, f"SPEED {args.speed}")
-            send_command(ser, "READY")
-
-        while True:
-            frame = camera.read()
-            if frame is None:
-                print("Camera frame was not read", flush=True)
-                time.sleep(0.1)
-                continue
-
-            detections = detect_signs(frame)
-            label = choose_label(detections)
-            history.append(label)
-            stable = stable_label(history)
-
-            if ser is not None and stable in SIGN_COMMANDS:
-                command = SIGN_COMMANDS[stable]
-                now = time.monotonic()
-                can_repeat = command in {"LEFT", "RIGHT", "BRICK"}
-
-                if (
-                    command != last_command or can_repeat
-                ) and now - last_sent_at >= MIN_COMMAND_INTERVAL:
-                    send_command(ser, command)
-                    last_command = command
-                    last_sent_at = now
-                    history.clear()
-
-            if not args.no_show:
-                cv2.imshow("RoboDriver signs", annotate_frame(frame, detections))
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    break
-
-            if ser is not None:
-                while ser.in_waiting:
-                    print("< " + ser.readline().decode("utf-8", errors="replace").strip(), flush=True)
-
-    finally:
-        if ser is not None:
-            send_command(ser, "STOP")
-            ser.close()
-        camera.stop()
-        release_opencv()
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Raspberry Pi logic for RoboDriver.")
-    parser.add_argument("--port", default=None, help="Arduino serial port, for example /dev/ttyUSB0")
-    parser.add_argument("--baudrate", type=int, default=DEFAULT_BAUDRATE)
-    parser.add_argument("--speed", type=int, default=DEFAULT_SPEED)
-    parser.add_argument("--camera-index", type=int, default=0)
-    parser.add_argument("--camera-only", action="store_true", help="Show recognition without Arduino commands")
-    parser.add_argument("--no-show", action="store_true", help="Do not show OpenCV debug window")
-    return parser.parse_args()
-
-
-if __name__ == "__main__":
-    run(parse_args())
+# Правильное закрытие камеры и окон на Pi
+camera.stop()
+cv2.destroyAllWindows()
