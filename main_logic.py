@@ -1,8 +1,7 @@
 import cv2
 import numpy as np
-from picamera2 import Picamera2  # Подключаем камеру Raspberry Pi
 
-# Загрузка и подготовка шаблонов (оригинальный блок)
+# Загрузка и подготовка шаблонов
 try:
     left = cv2.imread("Set_znakc/left.png")
     right = cv2.imread("Set_znakc/right.jpg")
@@ -23,34 +22,38 @@ try:
     forward = cv2.inRange(forward, (89, 91, 149), (255, 255, 255))
 
 except Exception as e:
-    print(f"Ошибка загрузки шаблонов! Проверьте, лежат ли картинки рядом со скриптом. {e}")
+    print(f"Ошибка загрузки шаблонов! {e}")
     exit()
 
 def checkSize(w, h):
     return w * h > 1500
 
-# --- Инициализация камеры Raspberry Pi ---
-camera = Picamera2()
-camera.preview_configuration.main.size = (640, 480)
-camera.preview_configuration.main.format = "RGB888"
-camera.preview_configuration.main.align()
-camera.configure("preview")
-camera.start()
-# -----------------------------------------
+# Инициализация камеры на Raspberry Pi
+# На Raspberry Pi OS (с libcamera) OpenCV часто подтягивает камеру через V4L2 на индексе 0.
+# Если не заработает с 0, можно попробовать cv2.VideoCapture(0, cv2.CAP_V4L2)
+cap = cv2.VideoCapture(0)
+
+# Настройка разрешения камеры Raspberry Pi
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
 print("Нажмите 'q' на клавиатуре для выхода из программы.")
 
 while True:
-    # Захват кадра с камеры Raspberry Pi
-    im = camera.capture_array()
-    
-    # Конвертируем из RGB в BGR, чтобы цвета маски и imshow отображались корректно
-    im = cv2.cvtColor(im, cv2.COLOR_RGB2BGR)
+    ret, im_raw = cap.read()
+    if not ret:
+        print("Не удалось получить кадр с камеры Raspberry Pi.")
+        break
+
+    # === РАЗВОРОТ И ОТЗЕРКАЛИВАНИЕ ДЛЯ ПЕРЕВЕРНУТОЙ КАМЕРЫ ===
+    # flipCode = -1 разворачивает изображение одновременно по вертикали и горизонтали.
+    # Это как раз исправляет физический переворот "вверх ногами" + сохраняет право и лево на своих местах.
+    im = cv2.flip(im_raw, -1)
 
     # Текущее действие для вывода на экран
     detected_action = "Searching..."
 
-    # Преобразование в HSV и создание маски
+    # Преобразование в HSV и создание маски (ЛОГИКА И ЦВЕТА НЕ ИЗМЕНЕНЫ)
     hsv = cv2.cvtColor(im, cv2.COLOR_BGR2HSV)
     thres = cv2.inRange(hsv, (89, 124, 73), (255, 255, 255))
     cv2.imshow("Бинарная маска", thres) 
@@ -80,7 +83,7 @@ while True:
             brick_val = 0
             forward_val = 0
             
-            # Попиксельное сравнение с шаблонами (твой цикл)
+            # Попиксельное сравнение с шаблонами (БЕЗ ИЗМЕНЕНИЙ)
             for i in range(64):
                 for j in range(64):
                     if roImg[i][j] == left[i][j]:
@@ -94,7 +97,7 @@ while True:
                     if roImg[i][j] == forward[i][j]:
                         forward_val += 1
             
-            # Определение того, какой знак "видит" компьютер (твои оригинальные if-elif)
+            # Определение того, какой знак "видит" компьютер
             if left_val > 3100:
                 detected_action = f"TURN LEFT (Match: {left_val})"
             elif right_val > 3000:
@@ -112,12 +115,12 @@ while True:
     cv2.putText(im, detected_action, (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
     
     # Отображение главного окна с камеры
-    cv2.imshow("Raspberry Pi Vision", im)
+    cv2.imshow("Raspberry Pi Camera Vision", im)
     
     # Выход по нажатию клавиши 'q'
     if cv2.waitKey(1) == ord('q'):
         break
 
-# Правильное закрытие камеры Raspberry Pi и окон
-camera.stop()
+# Освобождение ресурсов
+cap.release()
 cv2.destroyAllWindows()
