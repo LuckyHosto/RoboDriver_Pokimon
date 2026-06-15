@@ -16,9 +16,9 @@ constexpr int TURN_SPEED = 145;
 constexpr float TURN_TOLERANCE_DEG = 3.0f;
 constexpr unsigned long GYRO_UPDATE_MS = 5;
 
-// Коэффициент П-регулятора для удержания прямой линии. 
-// Если робота мотает из стороны в сторону — уменьшай (например, до 2.0). 
-// Если он вяло реагирует на уход с курса — увеличивай (например, до 5.0).
+// Коэффициент коррекции курса при движении прямо.
+// ВНИМАНИЕ: Если робота начнет резко уносить в сторону вместо выравнивания,
+// просто измени знак коэффициента на минус (например: -3.5f)
 constexpr float KP_STRAIGHT = 3.5f; 
 
 Adafruit_NeoPixel pixels(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
@@ -45,7 +45,7 @@ int driveSpeed = DEFAULT_SPEED;
 float yawDeg = 0.0f;
 float gyroZOffset = 0.0f;
 float turnTargetDeg = 0.0f;
-float forwardTargetYaw = 0.0f; // Переменная для хранения целевого курса при движении прямо
+float forwardTargetYaw = 0.0f; 
 bool gyroReady = false;
 unsigned long lastGyroUpdate = 0;
 unsigned long lastLedUpdate = 0;
@@ -74,8 +74,8 @@ int16_t readMpuWord(uint8_t reg) {
 
 bool initGyro() {
   Wire.begin();
-  writeMpu(0x6B, 0x00);  // Wake MPU6050.
-  writeMpu(0x1B, 0x00);  // +/-250 deg/s.
+  writeMpu(0x6B, 0x00);  
+  writeMpu(0x1B, 0x00);  
   delay(100);
 
   Wire.beginTransmission(MPU_ADDR);
@@ -180,27 +180,24 @@ void stopRobot() {
 }
 
 void driveForward() {
-  forwardTargetYaw = yawDeg; // Запоминаем текущий угол как целевое направление движения прямой
+  forwardTargetYaw = yawDeg; // Запоминаем текущий угол как эталон прямой линии
   tankDrive(driveSpeed, driveSpeed);
   motionMode = MOTION_FORWARD;
   ledMode = LED_MOVING;
 }
 
-// Автоматическая корректировка курса при движении вперед
+// Корректировка курса при движении по прямой
 void updateForwardCorrection() {
   if (motionMode != MOTION_FORWARD) {
     return;
   }
 
-  // Считаем ошибку отклонения от целевого курса
   float error = forwardTargetYaw - yawDeg;
   int correction = static_cast<int>(error * KP_STRAIGHT);
 
-  // Вычисляем новые скорости для левого и правого бортов
   int leftSpeed = constrain(driveSpeed + correction, 0, 255);
   int rightSpeed = constrain(driveSpeed - correction, 0, 255);
 
-  // Применяем скорости к моторам (не перезаписывая статус движения)
   setMotorPair(LEFT_FORWARD_PIN, LEFT_BACKWARD_PIN, leftSpeed);
   setMotorPair(RIGHT_FORWARD_PIN, RIGHT_BACKWARD_PIN, rightSpeed);
 }
@@ -230,35 +227,43 @@ void startTurn(float degrees) {
     return;
   }
 
-  yawDeg = 0.0f; // Сбрасываем относительный угол перед контролируемым поворотом
+  yawDeg = 0.0f; // СБРОС УГЛА: теперь мы считаем поворот строго от 0
   turnTargetDeg = degrees;
   motionMode = MOTION_TURNING;
   ledMode = LED_MOVING;
 
   if (degrees > 0) {
-    tankDrive(TURN_SPEED, -TURN_SPEED);
+    tankDrive(TURN_SPEED, -TURN_SPEED); // Крутим вправо
   } else {
-    tankDrive(-TURN_SPEED, TURN_SPEED);
+    tankDrive(-TURN_SPEED, TURN_SPEED); // Крутим влево
   }
 }
 
+// Обновленная логика контроля контролируемого поворота
 void updateTurn() {
   if (motionMode != MOTION_TURNING) {
     return;
   }
 
-  float error = turnTargetDeg - yawDeg;
-  if (abs(error) <= TURN_TOLERANCE_DEG) {
+  // Берем значения по модулю (abs), чтобы направление осей гироскопа нас больше не волновало
+  float currentRotation = abs(yawDeg);
+  float targetRotation = abs(turnTargetDeg);
+
+  // Проверяем, повернулись ли мы на нужный угол с учетом погрешности
+  if (currentRotation >= (targetRotation - TURN_TOLERANCE_DEG)) {
     stopRobot();
     Serial.println(F("TURN_DONE"));
     return;
   }
 
-  int speed = abs(error) < 25.0f ? max(95, TURN_SPEED - 35) : TURN_SPEED;
-  if (error > 0) {
-    tankDrive(speed, -speed);
+  // Динамическое замедление: если до конца поворота осталось меньше 25 градусов, притормаживаем
+  float remaining = targetRotation - currentRotation;
+  int speed = remaining < 25.0f ? max(90, TURN_SPEED - 35) : TURN_SPEED;
+
+  if (turnTargetDeg > 0) {
+    tankDrive(speed, -speed); // Продолжаем вращение вправо
   } else {
-    tankDrive(-speed, speed);
+    tankDrive(-speed, speed); // Продолжаем вращение влево
   }
 }
 
@@ -294,13 +299,13 @@ void handleCommand(String command) {
     stopRobot();
     Serial.println(F("STOP_OK"));
   } else if (command == "LEFT") {
-    startTurn(-90.0f); // Поворот налево на 90 градусов по гироскопу
+    startTurn(-90.0f); 
     Serial.println(F("LEFT_OK"));
   } else if (command == "RIGHT" || command == "TIGHT") {
-    startTurn(90.0f);  // Поворот направо на 90 градусов по гироскопу
+    startTurn(90.0f);  
     Serial.println(F("RIGHT_OK"));
   } else if (command == "BRICK") {
-    startTurn(180.0f); // Разворот на "Кирпич"
+    startTurn(180.0f); 
     Serial.println(F("BRICK_OK"));
   } else {
     Serial.print(F("UNKNOWN "));
@@ -330,7 +335,7 @@ void setup() {
 void loop() {
   updateGyro();
   updateTurn();
-  updateForwardCorrection(); // Работает во время движения прямо для компенсации дрифта
+  updateForwardCorrection(); // Стабилизация движения по прямой
   updateLeds();
 
   if (Serial.available() > 0) {
