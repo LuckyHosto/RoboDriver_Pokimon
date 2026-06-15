@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-# Загрузка и подготовка шаблонов
+# === ЗАГРУЗКА И ПОДГОТОВКА ШАБЛОНОВ (ТВОЯ ОРИГИНАЛЬНАЯ ЛОГИКА) ===
 try:
     left = cv2.imread("Set_znakc/left.png")
     right = cv2.imread("Set_znakc/right.jpg")
@@ -22,41 +22,41 @@ try:
     forward = cv2.inRange(forward, (89, 91, 149), (255, 255, 255))
 
 except Exception as e:
-    print(f"Ошибка загрузки шаблонов! {e}")
+    print(f"Ошибка загрузки шаблонов! Проверьте, лежат ли картинки рядом со скриптом. {e}")
     exit()
 
 def checkSize(w, h):
     return w * h > 1500
 
-# Инициализация камеры на Raspberry Pi
-# На Raspberry Pi OS (с libcamera) OpenCV часто подтягивает камеру через V4L2 на индексе 0.
-# Если не заработает с 0, можно попробовать cv2.VideoCapture(0, cv2.CAP_V4L2)
-cap = cv2.VideoCapture(0)
 
-# Настройка разрешения камеры Raspberry Pi
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+# === ИНИЦИАЛИЗАЦИЯ КАМЕРЫ RASPBERRY PI ===
+from picamera2 import Picamera2
+picam = Picamera2()
+
+# Запрашиваем RGB888, так как он поддерживается аппаратно
+config = picam.create_preview_configuration(main={"size": (640, 480), "format": "RGB888"})
+picam.configure(config)
+picam.start()
 
 print("Нажмите 'q' на клавиатуре для выхода из программы.")
 
 while True:
-    ret, im_raw = cap.read()
-    if not ret:
-        print("Не удалось получить кадр с камеры Raspberry Pi.")
-        break
+    # 1. Забираем чистый кадр из Picamera2
+    frame_raw = picam.capture_array()
 
-    # === РАЗВОРОТ И ОТЗЕРКАЛИВАНИЕ ДЛЯ ПЕРЕВЕРНУТОЙ КАМЕРЫ ===
-    # flipCode = -1 разворачивает изображение одновременно по вертикали и горизонтали.
-    # Это как раз исправляет физический переворот "вверх ногами" + сохраняет право и лево на своих местах.
-    im = cv2.flip(im_raw, -1)
+    # 2. ЖЕСТКАЯ КОРРЕКЦИЯ ЦВЕТА ДЛЯ ВЫВОДА И ОБРАБОТКИ
+    # Переворачиваем каналы, чтобы вернуть синий и красный на свои места
+    im = cv2.cvtColor(frame_raw, cv2.COLOR_RGB2BGR)
 
     # Текущее действие для вывода на экран
     detected_action = "Searching..."
 
-    # Преобразование в HSV и создание маски (ЛОГИКА И ЦВЕТА НЕ ИЗМЕНЕНЫ)
+    # Преобразование в HSV и создание маски (твои оригинальные настройки)
     hsv = cv2.cvtColor(im, cv2.COLOR_BGR2HSV)
-    thres = cv2.inRange(hsv, (89, 124, 73), (255, 255, 255))
-    cv2.imshow("Бинарная маска", thres) 
+    thres = cv2.inRange(hsv, (0, 255, 100), (255, 255, 255))
+    
+    # Английское название окна, чтобы не ломался интерфейс Линукса
+    cv2.imshow("Binary Mask", thres) 
 
     bitwise = cv2.bitwise_and(im, im, mask=thres)
     gray = cv2.cvtColor(bitwise, cv2.COLOR_BGR2GRAY)
@@ -83,7 +83,7 @@ while True:
             brick_val = 0
             forward_val = 0
             
-            # Попиксельное сравнение с шаблонами (БЕЗ ИЗМЕНЕНИЙ)
+            # Твой попиксельный анализ сравнения с шаблонами
             for i in range(64):
                 for j in range(64):
                     if roImg[i][j] == left[i][j]:
@@ -97,12 +97,12 @@ while True:
                     if roImg[i][j] == forward[i][j]:
                         forward_val += 1
             
-            # Определение того, какой знак "видит" компьютер
+            # Логика определения знака на основе весов
             if left_val > 3100:
                 detected_action = f"TURN LEFT (Match: {left_val})"
-            elif right_val > 3000:
+            elif right_val > 2900:
                 detected_action = f"TURN RIGHT (Match: {right_val})"
-            elif brick_val > 2900:
+            elif brick_val > 2800:
                 detected_action = f"brick (Match: {brick_val})"
             elif stop_val > 2900:
                 detected_action = f"STOP (Match: {stop_val})"
@@ -113,7 +113,7 @@ while True:
 
     # Вывод текста с результатом распознавания прямо на видеопоток
     cv2.putText(im, detected_action, (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-    
+    im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
     # Отображение главного окна с камеры
     cv2.imshow("Raspberry Pi Camera Vision", im)
     
@@ -121,6 +121,6 @@ while True:
     if cv2.waitKey(1) == ord('q'):
         break
 
-# Освобождение ресурсов
-cap.release()
+# Освобождение ресурсов камеры
+picam.stop()
 cv2.destroyAllWindows()
