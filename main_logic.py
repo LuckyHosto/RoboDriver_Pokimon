@@ -43,6 +43,27 @@ except Exception as e:
 def checkSize(w, h):
     return w * h > 1500
 
+# === ФУНКЦИИ ИЗ test_cam.py ДЛЯ ИДЕАЛЬНОЙ МАСКИ ===
+def clean_mask(mask: np.ndarray) -> np.ndarray:
+    kernel = np.ones((5, 5), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    return mask
+
+def build_sign_mask(frame: np.ndarray) -> np.ndarray:
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    
+    # Ищем красные оттенки
+    red_low = cv2.inRange(hsv, (0, 120, 55), (12, 255, 255))
+    red_high = cv2.inRange(hsv, (168, 120, 55), (180, 255, 255))
+    red = cv2.bitwise_or(red_low, red_high)
+    
+    # Ищем синие оттенки
+    blue = cv2.inRange(hsv, (92, 100, 55), (132, 255, 255))
+
+    return clean_mask(cv2.bitwise_or(red, blue))
+# ===================================================
+
 # === ИНИЦИАЛИЗАЦИЯ КАМЕРЫ RASPBERRY PI ===
 from picamera2 import Picamera2
 picam = Picamera2()
@@ -60,15 +81,13 @@ while True:
     detected_action = "Searching..."
     cmd_to_send = None  # Сюда запишем команду для Ардуино, если знак найден
 
-    hsv = cv2.cvtColor(im, cv2.COLOR_BGR2HSV)
-    thres = cv2.inRange(hsv, (0, 255, 100), (255, 255, 255))
+    # Используем новую функцию создания маски с морфологией
+    thres = build_sign_mask(im)
     
     cv2.imshow("Binary Mask", thres) 
 
-    bitwise = cv2.bitwise_and(im, im, mask=thres)
-    gray = cv2.cvtColor(bitwise, cv2.COLOR_BGR2GRAY)
-    
-    contours, _ = cv2.findContours(gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    # Ищем контуры напрямую по чистой бинарной маске thres
+    contours, _ = cv2.findContours(thres, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     
     if len(contours) != 0:
         c = max(contours, key=cv2.contourArea)
